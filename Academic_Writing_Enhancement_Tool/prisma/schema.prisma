@@ -1,0 +1,172 @@
+// This is your Prisma schema file.
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── 用户 ──────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String?  @unique
+  phone     String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  credits   Int      @default(0)  // 剩余字符数
+  freeUsed  Boolean  @default(false) // 是否已用过免费额度
+
+  projects  Project[]
+  orders    Order[]
+  otpCodes  OtpCode[]
+}
+
+// ── 验证码 ────────────────────────────────────────────
+
+model OtpCode {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  code      String
+  channel   String   // email | sms
+  target    String   // 邮箱地址或手机号
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ── 论文项目 ──────────────────────────────────────────
+
+model Project {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String    @default("未命名论文")
+  sourceType  String    @default("paste") // paste | docx
+  originalFileKey String? // OSS/本地存储的文件路径
+  totalChars  Int       @default(0)
+  status      String    @default("active") // active | deleted
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  paragraphs  Paragraph[]
+}
+
+// ── 段落 ──────────────────────────────────────────────
+
+model Paragraph {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  index       Int      // 段落在文档中的顺序
+  original    String   @db.Text
+  charCount   Int      // 原文字符数（按计费规则）
+  status      String   @default("pending")
+  // pending | processing | done | error | accepted | reverted
+
+  tasks       ProcessTask[]
+  activeResult String? @db.Text   // 当前生效的修改结果（已接受）
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId, index])
+}
+
+// ── 处理任务 ───────────────────────────────────────────
+
+model ProcessTask {
+  id            String   @id @default(cuid())
+  paragraphId   String
+  paragraph     Paragraph @relation(fields: [paragraphId], references: [id], onDelete: Cascade)
+  userId        String
+
+  mode          String   // conservative | polish
+  lockedTerms   String[] // 锁定术语列表
+  result        String?  @db.Text
+  status        String   @default("queued")
+  // queued | running | done | failed | cancelled
+
+  // 扣费相关
+  charCount     Int      // 本次计费字符数
+  credited      Boolean  @default(false)  // 是否已扣费
+  isFreeRetry   Boolean  @default(false)  // 是否免费重试
+
+  // 质量检查结果
+  validationPassed Boolean?
+  validationDetails Json?
+
+  // 错误信息
+  errorCode     String?
+  errorMessage  String?
+
+  // 耗时
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([paragraphId])
+  @@index([userId])
+}
+
+// ── 字数套餐 ──────────────────────────────────────────
+
+model Package {
+  id          String  @id @default(cuid())
+  name        String  // 小份套餐 / 标准套餐 / 大份套餐 / 专业套餐
+  chars       Int     // 字符数
+  priceFen    Int     // 价格（分，人民币）
+  active      Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  orders      Order[]
+}
+
+// ── 订单 ──────────────────────────────────────────────
+
+model Order {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  packageId     String
+  package       Package  @relation(fields: [packageId], references: [id])
+
+  priceFen      Int      // 实际支付金额（分）
+  chars         Int      // 获得字符数
+  status        String   @default("pending")
+  // pending | paid | refunded | cancelled
+
+  // 微信支付
+  wxPrepayId    String?
+  wxTransactionId String?
+  paidAt        DateTime?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ── 用量记录（用于审计和对账）────────────────────────
+
+model UsageLog {
+  id          String   @id @default(cuid())
+  userId      String
+  taskId      String
+  charCount   Int      // 扣除字符数（正数=扣除，负数=退还）
+  balanceBefore Int
+  balanceAfter  Int
+  reason      String   // processed | refund_failed | refund_free_retry
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+}

@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "./dist-worker",
+    "noEmit": false,
+    "isolatedModules": false,
+    "jsx": "react-jsx"
+  },
+  "ts-node": {
+    "transpileOnly": true,
+    "require": ["tsconfig-paths/register"]
+  },
+  "include": ["src/worker/**/*.ts", "src/lib/**/*.ts", "src/types/**/*.ts"]
+}
