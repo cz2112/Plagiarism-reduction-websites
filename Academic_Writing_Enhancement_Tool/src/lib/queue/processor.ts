@@ -3,7 +3,7 @@
  * 使用 BullMQ 异步处理 AI 生成任务
  */
 
-import { Queue, Worker, Job } from 'bullmq'
+import { Queue, Worker, Job, ConnectionOptions } from 'bullmq'
 import IORedis from 'ioredis'
 import { prisma } from '../db'
 import { processWithAI } from '../ai/adapter'
@@ -15,7 +15,7 @@ import type { ProcessMode } from '@/types'
 
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
   maxRetriesPerRequest: null, // BullMQ 要求
-})
+}) as unknown as ConnectionOptions
 
 export const PROCESS_QUEUE_NAME = 'paragraph-process'
 
@@ -149,7 +149,7 @@ export function createWorker(): Worker<ProcessJobData> {
         }
       }
     },
-    { connection, concurrency: 5 },
+    { connection, concurrency: parseInt(process.env.WORKER_CONCURRENCY ?? '5') },
   )
 
   worker.on('failed', (job, err) => {

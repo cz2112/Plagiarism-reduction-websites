@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
-import { getCurrentUserId } from '@/lib/session'
+import { rateLimit, getClientIp } from '@/lib/rateLimit'
+import { sendOtpEmail } from '@/lib/mailer'
 
 const sendCodeSchema = z.object({
   target: z.string(),
@@ -16,6 +17,30 @@ export async function POST(req: NextRequest) {
   }
 
   const { target, channel } = parsed.data
+
+  // 邮箱格式校验
+  if (channel === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target)) {
+    return NextResponse.json({ ok: false, code: 'INVALID_EMAIL', message: '邮箱格式不正确' }, { status: 400 })
+  }
+
+  // 频率限制：同一 IP 每分钟最多 5 次
+  const ip = getClientIp(req)
+  const ipLimit = await rateLimit(`send-code:ip:${ip}`, 5, 60)
+  if (!ipLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, code: 'RATE_LIMITED', message: '请求过于频繁，请稍后再试' },
+      { status: 429 },
+    )
+  }
+
+  // 频率限制：同一目标 60 秒只能发一次
+  const targetLimit = await rateLimit(`send-code:target:${target}`, 1, 60)
+  if (!targetLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, code: 'RATE_LIMITED', message: `请 ${targetLimit.resetSeconds} 秒后再试` },
+      { status: 429 },
+    )
+  }
 
   // 生成 6 位验证码
   const code = Math.floor(100000 + Math.random() * 900000).toString()
@@ -43,9 +68,26 @@ export async function POST(req: NextRequest) {
     data: { userId: user.id, code, channel, target, expiresAt },
   })
 
-  // TODO: 实际发送邮件/短信（接入 SMTP 或短信服务）
-  if (process.env.NODE_ENV === 'development') {
-    console.log(`[OTP] ${channel} ${target}: ${code}`)
+  // 实际发送
+  try {
+    if (channel === 'email') {
+      await sendOtpEmail(target, code)
+    } else {
+      // 短信通道尚未接入
+      if (process.env.NODE_ENV === 'production') {
+        return NextResponse.json(
+          { ok: false, code: 'SMS_NOT_SUPPORTED', message: '短信通道暂未开放' },
+          { status: 501 },
+        )
+      }
+      console.log(`[OTP][sms] ${target}: ${code}`)
+    }
+  } catch (err) {
+    console.error('[send-code] 发送失败', err)
+    return NextResponse.json(
+      { ok: false, code: 'SEND_FAILED', message: '验证码发送失败，请稍后再试' },
+      { status: 500 },
+    )
   }
 
   return NextResponse.json({ ok: true, data: null })

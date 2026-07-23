@@ -87,12 +87,37 @@ npm run worker
 
 模型不改变事实/数字/引用/锁定术语，不伪造参考文献，只输出正文。生成后自动校验，失败自动重试一次，仍失败则不扣费并提示用户。详见 [src/lib/ai/prompts.ts](src/lib/ai/prompts.ts) 与 [src/lib/ai/validator.ts](src/lib/ai/validator.ts)。
 
+## 部署
+
+```bash
+npm install
+npm run build
+npx prisma migrate deploy   # 生产环境用 migrate deploy，不要用 db push
+npm run db:seed
+pm2 start ecosystem.config.js   # 同时拉起 web + worker
+```
+
+环境变量见 [.env.example](.env.example)。上线前务必配置：
+- `SESSION_SECRET`（≥32 位随机串）
+- SMTP_*（验证码邮件发送）
+- WECHAT_*（含 `WECHAT_APIV3_KEY` 与 `WECHAT_PLATFORM_CERT_PATH`，用于回调验签解密）
+
+健康检查：`GET /api/health`
+
+## 已实现（本轮加固）
+
+- ✅ 微信支付回调**签名验证 + resource AES-256-GCM 解密**（[src/lib/payment/wechat.ts](src/lib/payment/wechat.ts)）
+- ✅ OTP 验证码**邮件实际发送**（nodemailer，[src/lib/mailer.ts](src/lib/mailer.ts)）
+- ✅ 验证码发送/校验**频率限制 + 防爆破**（Redis，[src/lib/rateLimit.ts](src/lib/rateLimit.ts)）
+- ✅ 上传文件**类型校验**、登出**跳转健壮性**、健康检查接口
+- ✅ 前端**支付状态轮询 + 二维码渲染**（[credits/CreditsClient.tsx](src/app/(dashboard)/credits/CreditsClient.tsx)）
+
 ## 待完善（后续版本）
 
-- 微信支付回调**签名验证与 resource 解密**（当前为占位）
-- OTP 验证码**实际发送**（SMTP / 短信）
+- 微信支付**平台证书自动轮换**（当前从固定路径读取，证书更新需手动替换）
+- 短信验证码通道接入
 - 后台管理（用户/订单查询、人工补发字数、模型成本监控）
-- 请求频率限制、内容安全检查、异常账号封禁
+- 内容安全检查、异常账号封禁
 - 文件存储接入 OSS / COS（当前预留 local 模式）
 - 深度降重模式、修订标记 Word、查重报告解析
 ```

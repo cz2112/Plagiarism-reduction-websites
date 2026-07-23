@@ -9,8 +9,8 @@ import { prisma } from './db'
 
 /** 计算一段文本的计费字符数 */
 export function countBillableChars(text: string): number {
-  // 匹配汉字、英文字母、数字
-  const matches = text.match(/[一-龥a-zA-Z0-9]/g)
+  // 匹配汉字（含扩展区常用范围）、英文字母、数字，不计标点和空格
+  const matches = text.match(/[一-鿿㐀-䶿a-zA-Z0-9]/g)
   return matches ? matches.length : 0
 }
 

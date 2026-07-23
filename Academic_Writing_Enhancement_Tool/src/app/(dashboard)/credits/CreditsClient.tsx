@@ -1,6 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
+import QRCode from 'qrcode'
 import { Button } from '@/components/ui/Button'
 
 interface Package {
@@ -26,10 +28,57 @@ interface CreditsClientProps {
 }
 
 export function CreditsClient({ balance, dbPackages }: CreditsClientProps) {
+  const router = useRouter()
   const [selected, setSelected] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [qrCode, setQrCode] = useState<string | null>(null)
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [orderId, setOrderId] = useState<string | null>(null)
+  const [paid, setPaid] = useState(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // 把 code_url 渲染成可扫描的二维码图片
+  useEffect(() => {
+    if (!qrCode) { setQrDataUrl(null); return }
+    QRCode.toDataURL(qrCode, { width: 200, margin: 1 })
+      .then(setQrDataUrl)
+      .catch(() => setQrDataUrl(null))
+  }, [qrCode])
+
+  // 轮询订单支付状态：每 3 秒一次，最多 5 分钟
+  useEffect(() => {
+    if (!orderId) return
+    let elapsed = 0
+    pollRef.current = setInterval(async () => {
+      elapsed += 3
+      if (elapsed > 300) { // 5 分钟超时
+        if (pollRef.current) clearInterval(pollRef.current)
+        return
+      }
+      try {
+        const res = await fetch(`/api/payment/status?orderId=${orderId}`)
+        const json = await res.json()
+        if (json.ok && json.data.status === 'paid') {
+          if (pollRef.current) clearInterval(pollRef.current)
+          setPaid(true)
+          // 刷新余额
+          setTimeout(() => router.refresh(), 1500)
+        }
+      } catch {
+        // 忽略单次轮询失败
+      }
+    }, 3000)
+
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [orderId, router])
+
+  function closeModal() {
+    if (pollRef.current) clearInterval(pollRef.current)
+    setQrCode(null)
+    setQrDataUrl(null)
+    setOrderId(null)
+    setPaid(false)
+  }
 
   // 优先用数据库套餐，数据库为空时用静态配置
   const packages = dbPackages.length > 0
@@ -117,15 +166,30 @@ export function CreditsClient({ balance, dbPackages }: CreditsClientProps) {
       {qrCode && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-2xl p-6 text-center shadow-xl max-w-xs w-full">
-            <h3 className="font-semibold text-gray-900 mb-4">微信扫码支付</h3>
-            {/* 实际项目用 qrcode 库渲染二维码 */}
-            <div className="rounded-lg bg-gray-100 h-40 flex items-center justify-center text-xs text-gray-400 mb-4">
-              code_url: {qrCode.slice(0, 40)}…
-            </div>
-            <p className="text-sm text-gray-500 mb-4">支付成功后字数自动到账，可刷新页面查看</p>
-            <Button variant="secondary" className="w-full justify-center" onClick={() => { setQrCode(null); setOrderId(null) }}>
-              关闭
-            </Button>
+            {paid ? (
+              <>
+                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-3xl text-green-600">✓</div>
+                <h3 className="font-semibold text-gray-900 mb-2">支付成功</h3>
+                <p className="text-sm text-gray-500 mb-4">字数已到账</p>
+                <Button className="w-full justify-center" onClick={closeModal}>完成</Button>
+              </>
+            ) : (
+              <>
+                <h3 className="font-semibold text-gray-900 mb-4">微信扫码支付</h3>
+                <div className="rounded-lg bg-white h-52 flex items-center justify-center mb-4">
+                  {qrDataUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={qrDataUrl} alt="微信支付二维码" width={200} height={200} />
+                  ) : (
+                    <span className="text-xs text-gray-400">二维码生成中…</span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-500 mb-4">请使用微信扫码支付，支付成功后自动到账</p>
+                <Button variant="secondary" className="w-full justify-center" onClick={closeModal}>
+                  取消
+                </Button>
+              </>
+            )}
           </div>
         </div>
       )}
