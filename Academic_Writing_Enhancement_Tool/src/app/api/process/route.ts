@@ -7,12 +7,13 @@ import {
   hasEnoughCredits,
   isFreeRetryAvailable,
 } from '@/lib/billing'
+import { billedChars, MODE_VALUES } from '@/lib/modes'
 import { processQueue } from '@/lib/queue/processor'
 import type { ProcessJobData } from '@/lib/queue/processor'
 
 const processSchema = z.object({
   paragraphId: z.string(),
-  mode: z.enum(['conservative', 'polish']),
+  mode: z.enum(MODE_VALUES),
   lockedTerms: z.array(z.string()).default([]),
 })
 
@@ -58,7 +59,9 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const charCount = countBillableChars(paragraph.original)
+  // 计费字符数（原文）→ 按等级倍率换算为实际扣费字符数
+  const rawChars = countBillableChars(paragraph.original)
+  const charCount = billedChars(rawChars, mode)
 
   // 判断是否为免费重试
   const freeRetryAvail = await isFreeRetryAvailable(paragraphId, mode)

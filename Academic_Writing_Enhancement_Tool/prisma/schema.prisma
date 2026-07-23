@@ -90,7 +90,7 @@ model ProcessTask {
   paragraph     Paragraph @relation(fields: [paragraphId], references: [id], onDelete: Cascade)
   userId        String
 
-  mode          String   // conservative | polish
+  mode          String   // standard | deep | premium（历史值 conservative/polish 兼容展示）
   lockedTerms   String[] // 锁定术语列表
   result        String?  @db.Text
   status        String   @default("queued")
@@ -104,6 +104,14 @@ model ProcessTask {
   // 质量检查结果
   validationPassed Boolean?
   validationDetails Json?
+
+  // 模型与用量（成本核算）
+  model             String?  // 实际使用的模型名
+  provider          String?  // AI 服务商
+  promptTokens      Int?     // 输入 token
+  completionTokens  Int?     // 输出 token
+  fallbackUsed      Boolean  @default(false) // 最终结果是否来自备用模型
+  fallbackAttempted Boolean  @default(false) // 是否尝试过备用模型（无论成败）
 
   // 错误信息
   errorCode     String?
@@ -147,7 +155,7 @@ model Order {
 
   // 微信支付
   wxPrepayId    String?
-  wxTransactionId String?
+  wxTransactionId String?  @unique
   paidAt        DateTime?
 
   createdAt     DateTime @default(now())

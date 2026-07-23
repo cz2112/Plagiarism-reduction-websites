@@ -1,6 +1,7 @@
 // ── 通用枚举 ──────────────────────────────────────────
 
-export type ProcessMode = 'conservative' | 'polish'
+// 三档改写强度：普通降重 / 深度降重 / 至尊降重
+export type ProcessMode = 'standard' | 'deep' | 'premium'
 
 export type ParagraphStatus =
   | 'pending'
@@ -54,6 +55,10 @@ export interface TaskView {
   errorCode: string | null
   errorMessage: string | null
   isFreeRetry: boolean
+  /** 是否尝试过备用模型 */
+  fallbackAttempted: boolean
+  /** 最终结果是否来自备用模型 */
+  fallbackUsed: boolean
   createdAt: string
 }
 
@@ -95,6 +100,18 @@ export interface AIProcessResult {
     promptTokens: number
     completionTokens: number
   }
+  /** 最终生效的模型名 */
+  model: string
+  /** AI 服务商标识 */
+  provider: string
+  /** 输出是否通过质量校验（编排层已完成重试/降级后的最终结论） */
+  validationPassed: boolean
+  /** 是否尝试过备用模型（无论备用是否成功） */
+  fallbackAttempted: boolean
+  /** 最终结果是否来自备用模型（备用成功时为 true） */
+  fallbackUsed: boolean
+  /** 最近一次校验失败详情（用于失败任务展示/日志） */
+  validationDetails?: string
 }
 
 export interface ValidationResult {

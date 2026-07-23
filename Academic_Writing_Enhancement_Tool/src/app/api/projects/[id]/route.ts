@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getCurrentUserId } from '@/lib/session'
+import { normalizeMode } from '@/lib/modes'
 
 // GET /api/projects/[id] — 获取项目详情及段落列表
 export async function GET(
@@ -47,13 +48,15 @@ export async function GET(
           ? {
               id: p.tasks[0].id,
               status: p.tasks[0].status,
-              mode: p.tasks[0].mode,
+              mode: normalizeMode(p.tasks[0].mode),
               lockedTerms: p.tasks[0].lockedTerms,
               result: p.tasks[0].result,
               validationPassed: p.tasks[0].validationPassed,
               errorCode: p.tasks[0].errorCode,
               errorMessage: p.tasks[0].errorMessage,
               isFreeRetry: p.tasks[0].isFreeRetry,
+              fallbackAttempted: p.tasks[0].fallbackAttempted,
+              fallbackUsed: p.tasks[0].fallbackUsed,
               createdAt: p.tasks[0].createdAt.toISOString(),
             }
           : null,

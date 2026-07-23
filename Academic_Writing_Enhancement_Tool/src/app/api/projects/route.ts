@@ -54,8 +54,16 @@ export async function POST(req: NextRequest) {
     if (!file) {
       return NextResponse.json({ ok: false, code: 'MISSING_FILE', message: '请上传文件' }, { status: 400 })
     }
-    if (file.size > 10 * 1024 * 1024) {
-      return NextResponse.json({ ok: false, code: 'FILE_TOO_LARGE', message: '文件不能超过 10MB' }, { status: 400 })
+    // 校验文件类型：只接受 .docx
+    const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    if (!file.name.toLowerCase().endsWith('.docx') && file.type !== DOCX_MIME) {
+      return NextResponse.json(
+        { ok: false, code: 'INVALID_FILE_TYPE', message: '仅支持 .docx 格式的 Word 文档' },
+        { status: 400 },
+      )
+    }
+    if (file.size > 500 * 1024 * 1024) {
+      return NextResponse.json({ ok: false, code: 'FILE_TOO_LARGE', message: '文件不能超过 500MB' }, { status: 400 })
     }
     const buffer = Buffer.from(await file.arrayBuffer())
     try {

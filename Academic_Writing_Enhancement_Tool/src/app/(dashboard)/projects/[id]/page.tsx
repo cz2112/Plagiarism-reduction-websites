@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { prisma } from '@/lib/db'
 import { getCurrentUserId } from '@/lib/session'
 import { WorkBench } from '@/components/editor/WorkBench'
+import { normalizeMode } from '@/lib/modes'
 
 interface Props {
   params: { id: string }
@@ -43,13 +44,15 @@ export default async function WorkbenchPage({ params }: Props) {
       ? {
           id: p.tasks[0].id,
           status: p.tasks[0].status as any,
-          mode: p.tasks[0].mode as any,
+          mode: normalizeMode(p.tasks[0].mode),
           lockedTerms: p.tasks[0].lockedTerms,
           result: p.tasks[0].result,
           validationPassed: p.tasks[0].validationPassed,
           errorCode: p.tasks[0].errorCode,
           errorMessage: p.tasks[0].errorMessage,
           isFreeRetry: p.tasks[0].isFreeRetry,
+          fallbackAttempted: p.tasks[0].fallbackAttempted,
+          fallbackUsed: p.tasks[0].fallbackUsed,
           createdAt: p.tasks[0].createdAt.toISOString(),
         }
       : null,

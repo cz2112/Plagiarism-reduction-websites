@@ -3,7 +3,7 @@
  * 使用原生 fetch 调用微信支付 API，避免引入重型 SDK
  */
 
-import { createHash, createSign, randomUUID } from 'crypto'
+import { createSign, createVerify, createDecipheriv, randomUUID } from 'crypto'
 import fs from 'fs'
 import { prisma } from '../db'
 import { addCredits } from '../billing'
@@ -32,12 +32,25 @@ interface JSAPIPayParams {
 }
 
 function getPrivateKey(): string {
-  return fs.readFileSync(process.env.WECHAT_PRIVATE_KEY_PATH as string, 'utf8')
+  const path = process.env.WECHAT_PRIVATE_KEY_PATH
+  if (!path) throw new Error('WECHAT_PAYMENT_NOT_CONFIGURED')
+  return fs.readFileSync(path, 'utf8')
+}
+
+export function assertWechatPaymentConfigured(): void {
+  const required = [
+    'WECHAT_APP_ID',
+    'WECHAT_MCH_ID',
+    'WECHAT_SERIAL_NO',
+    'WECHAT_PRIVATE_KEY_PATH',
+    'WECHAT_NOTIFY_URL',
+  ]
+  if (required.some((key) => !process.env[key])) throw new Error('WECHAT_PAYMENT_NOT_CONFIGURED')
 }
 
 /** 生成请求签名 */
 function sign(message: string): string {
-  const sign = createSign('SHA256withRSA')
+  const sign = createSign('RSA-SHA256')
   sign.update(message)
   return sign.sign(getPrivateKey(), 'base64')
 }
@@ -64,6 +77,7 @@ function buildAuthHeader(method: string, url: string, body: string): string {
 
 /** 统一下单（NATIVE 扫码） */
 export async function createNativeOrder(params: UnifiedOrderParams): Promise<PrepayResult> {
+  assertWechatPaymentConfigured()
   const url = 'https://api.mch.weixin.qq.com/v3/pay/transactions/native'
   const body = JSON.stringify({
     appid: process.env.WECHAT_APP_ID,
@@ -93,28 +107,113 @@ export async function createNativeOrder(params: UnifiedOrderParams): Promise<Pre
   return { prepayId: data.prepay_id, codeUrl: data.code_url }
 }
 
+// ── 回调验签与解密 ─────────────────────────────────────
+
+export interface CallbackHeaders {
+  timestamp: string
+  nonce: string
+  signature: string
+  serial: string
+}
+
+interface WechatResource {
+  ciphertext: string
+  nonce: string
+  associated_data?: string
+  algorithm: string
+}
+
+/** 验证微信回调签名（使用微信支付平台证书公钥）*/
+export function verifyCallbackSignature(headers: CallbackHeaders, rawBody: string): boolean {
+  const certPath = process.env.WECHAT_PLATFORM_CERT_PATH
+  if (!certPath) {
+    throw new Error('WECHAT_PLATFORM_CERT_PATH 未配置，无法验签')
+  }
+  const publicKey = fs.readFileSync(certPath, 'utf8')
+
+  // 构造验签串：timestamp\n nonce\n body\n
+  const message = `${headers.timestamp}\n${headers.nonce}\n${rawBody}\n`
+
+  const verify = createVerify('RSA-SHA256')
+  verify.update(message)
+  return verify.verify(publicKey, headers.signature, 'base64')
+}
+
+/** 解密回调 resource（AES-256-GCM）*/
+function decryptResource(resource: WechatResource): string {
+  const key = process.env.WECHAT_APIV3_KEY
+  if (!key || key.length !== 32) {
+    throw new Error('WECHAT_APIV3_KEY 未配置或长度不为 32')
+  }
+
+  const ciphertextBuf = Buffer.from(resource.ciphertext, 'base64')
+  // GCM 认证标签为密文末尾 16 字节
+  const authTag = ciphertextBuf.subarray(ciphertextBuf.length - 16)
+  const data = ciphertextBuf.subarray(0, ciphertextBuf.length - 16)
+
+  const decipher = createDecipheriv('aes-256-gcm', Buffer.from(key, 'utf8'), Buffer.from(resource.nonce, 'utf8'))
+  decipher.setAuthTag(authTag)
+  if (resource.associated_data) {
+    decipher.setAAD(Buffer.from(resource.associated_data, 'utf8'))
+  }
+
+  return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8')
+}
+
 /**
  * 处理支付回调
- * 注意：实际使用时需要验证微信的回调签名
+ * 先验签，再解密 resource，提取 out_trade_no 并入账
  */
-export async function handlePaymentCallback(body: Record<string, unknown>): Promise<void> {
-  // TODO: 验证回调签名（使用微信平台证书公钥）
-  const resource = body.resource as Record<string, unknown>
-  if (!resource) return
+export async function handlePaymentCallback(
+  headers: CallbackHeaders,
+  rawBody: string,
+): Promise<void> {
+  // 1. 验签
+  if (!verifyCallbackSignature(headers, rawBody)) {
+    throw new Error('回调签名验证失败')
+  }
 
-  // 解密 resource.ciphertext（AES-256-GCM）
-  // 实际实现需要使用微信支付 API v3 密钥解密
-  // 这里先用占位符表示流程
-  const outTradeNo = '' // 从解密后的数据中提取
+  const body = JSON.parse(rawBody) as { resource?: WechatResource }
+  const resource = body.resource
+  if (!resource) throw new Error('回调缺少 resource')
 
-  if (!outTradeNo) return
+  // 2. 解密
+  const decrypted = decryptResource(resource)
+  const payload = JSON.parse(decrypted) as {
+    out_trade_no: string
+    trade_state: string
+    transaction_id?: string
+    mchid?: string
+    appid?: string
+    amount?: { total?: number; currency?: string }
+  }
+
+  const outTradeNo = payload.out_trade_no
+  if (!outTradeNo) throw new Error('解密结果缺少 out_trade_no')
+
+  // 3. 仅在支付成功状态入账
+  if (payload.trade_state !== 'SUCCESS') return
 
   const order = await prisma.order.findUnique({
     where: { id: outTradeNo },
     include: { package: true },
   })
 
-  if (!order || order.status !== 'pending') return
+  if (!order || order.status !== 'pending') return // 幂等：非 pending 直接跳过
+  if (payload.mchid !== process.env.WECHAT_MCH_ID || payload.appid !== process.env.WECHAT_APP_ID) {
+    throw new Error('支付回调商户信息不匹配')
+  }
+  if (payload.amount?.total !== order.priceFen || payload.amount.currency !== 'CNY') {
+    throw new Error('支付回调金额不匹配')
+  }
+
+  // 记录微信交易号
+  if (payload.transaction_id) {
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { wxTransactionId: payload.transaction_id },
+    })
+  }
 
   await addCredits(order.userId, order.id, order.chars)
 }
