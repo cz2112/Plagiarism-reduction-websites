@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
 import { getCurrentUserId } from '@/lib/session'
-import { createNativeOrder } from '@/lib/payment/wechat'
+import { assertWechatPaymentConfigured, createNativeOrder } from '@/lib/payment/wechat'
 
 const createOrderSchema = z.object({
   packageId: z.string(),
@@ -37,13 +37,40 @@ export async function POST(req: NextRequest) {
     },
   })
 
+  if (process.env.PAYMENT_MODE === 'mock' && process.env.NODE_ENV !== 'production') {
+    return NextResponse.json({
+      ok: true,
+      data: { orderId: order.id, codeUrl: null, mock: true },
+    })
+  }
+
+  try {
+    assertWechatPaymentConfigured()
+  } catch {
+    await prisma.order.update({ where: { id: order.id }, data: { status: 'cancelled' } })
+    return NextResponse.json(
+      { ok: false, code: 'PAYMENT_NOT_CONFIGURED', message: '微信支付尚未配置，请联系管理员' },
+      { status: 503 },
+    )
+  }
+
   // 调用微信支付统一下单（NATIVE 扫码）
-  const payResult = await createNativeOrder({
-    orderId: order.id,
-    description: `文清AI - ${pkg.name}`,
-    totalFee: pkg.priceFen,
-    tradeType: 'NATIVE',
-  })
+  let payResult
+  try {
+    payResult = await createNativeOrder({
+      orderId: order.id,
+      description: `文清AI - ${pkg.name}`,
+      totalFee: pkg.priceFen,
+      tradeType: 'NATIVE',
+    })
+  } catch (error) {
+    await prisma.order.update({ where: { id: order.id }, data: { status: 'cancelled' } })
+    console.error('[payment/create]', error)
+    return NextResponse.json(
+      { ok: false, code: 'PAYMENT_PROVIDER_ERROR', message: '微信支付下单失败，请稍后重试' },
+      { status: 502 },
+    )
+  }
 
   // 保存 prepayId
   await prisma.order.update({

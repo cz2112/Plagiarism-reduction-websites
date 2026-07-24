@@ -5,6 +5,7 @@ import { getSession } from '@/lib/session'
 import { grantFreeQuota } from '@/lib/billing'
 import { rateLimit, getClientIp } from '@/lib/rateLimit'
 import { redis } from '@/lib/redis'
+import { verifyOtpHash } from '@/lib/otp'
 
 const verifySchema = z.object({
   target: z.string(),
@@ -23,7 +24,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: 'INVALID_PARAMS', message: '参数错误' }, { status: 400 })
   }
 
-  const { target, channel, code } = parsed.data
+  const channel = parsed.data.channel
+  const target = parsed.data.target.trim().toLowerCase()
+  const code = parsed.data.code
 
   // 防爆破：同一目标 15 分钟内失败超过 5 次则锁定
   const attemptKey = `verify:fail:${channel}:${target}`
@@ -53,17 +56,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: 'USER_NOT_FOUND', message: '用户不存在' }, { status: 404 })
   }
 
-  const otp = await prisma.otpCode.findFirst({
+  const candidates = await prisma.otpCode.findMany({
     where: {
       userId: user.id,
-      code,
       channel,
       target,
       usedAt: null,
       expiresAt: { gt: new Date() },
     },
     orderBy: { createdAt: 'desc' },
+    take: 5,
   })
+  const otp = candidates.find((candidate) => verifyOtpHash(target, code, candidate.code))
 
   if (!otp) {
     return NextResponse.json({ ok: false, code: 'INVALID_CODE', message: '验证码无效或已过期' }, { status: 400 })

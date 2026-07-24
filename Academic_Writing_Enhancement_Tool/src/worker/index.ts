@@ -5,8 +5,12 @@
  */
 
 import { createWorker } from '../lib/queue/processor'
+import { validateModelConfig } from '../lib/ai/model-router'
 
 console.log('[Worker] 启动中...')
+
+// 生产环境：模型配置不完整时直接退出，避免静默调用错误/昂贵模型
+validateModelConfig()
 
 const worker = createWorker()
 

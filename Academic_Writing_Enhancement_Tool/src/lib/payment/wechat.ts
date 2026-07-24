@@ -32,12 +32,25 @@ interface JSAPIPayParams {
 }
 
 function getPrivateKey(): string {
-  return fs.readFileSync(process.env.WECHAT_PRIVATE_KEY_PATH as string, 'utf8')
+  const path = process.env.WECHAT_PRIVATE_KEY_PATH
+  if (!path) throw new Error('WECHAT_PAYMENT_NOT_CONFIGURED')
+  return fs.readFileSync(path, 'utf8')
+}
+
+export function assertWechatPaymentConfigured(): void {
+  const required = [
+    'WECHAT_APP_ID',
+    'WECHAT_MCH_ID',
+    'WECHAT_SERIAL_NO',
+    'WECHAT_PRIVATE_KEY_PATH',
+    'WECHAT_NOTIFY_URL',
+  ]
+  if (required.some((key) => !process.env[key])) throw new Error('WECHAT_PAYMENT_NOT_CONFIGURED')
 }
 
 /** 生成请求签名 */
 function sign(message: string): string {
-  const sign = createSign('SHA256withRSA')
+  const sign = createSign('RSA-SHA256')
   sign.update(message)
   return sign.sign(getPrivateKey(), 'base64')
 }
@@ -64,6 +77,7 @@ function buildAuthHeader(method: string, url: string, body: string): string {
 
 /** 统一下单（NATIVE 扫码） */
 export async function createNativeOrder(params: UnifiedOrderParams): Promise<PrepayResult> {
+  assertWechatPaymentConfigured()
   const url = 'https://api.mch.weixin.qq.com/v3/pay/transactions/native'
   const body = JSON.stringify({
     appid: process.env.WECHAT_APP_ID,
@@ -120,7 +134,7 @@ export function verifyCallbackSignature(headers: CallbackHeaders, rawBody: strin
   // 构造验签串：timestamp\n nonce\n body\n
   const message = `${headers.timestamp}\n${headers.nonce}\n${rawBody}\n`
 
-  const verify = createVerify('SHA256withRSA')
+  const verify = createVerify('RSA-SHA256')
   verify.update(message)
   return verify.verify(publicKey, headers.signature, 'base64')
 }
@@ -169,6 +183,9 @@ export async function handlePaymentCallback(
     out_trade_no: string
     trade_state: string
     transaction_id?: string
+    mchid?: string
+    appid?: string
+    amount?: { total?: number; currency?: string }
   }
 
   const outTradeNo = payload.out_trade_no
@@ -183,6 +200,12 @@ export async function handlePaymentCallback(
   })
 
   if (!order || order.status !== 'pending') return // 幂等：非 pending 直接跳过
+  if (payload.mchid !== process.env.WECHAT_MCH_ID || payload.appid !== process.env.WECHAT_APP_ID) {
+    throw new Error('支付回调商户信息不匹配')
+  }
+  if (payload.amount?.total !== order.priceFen || payload.amount.currency !== 'CNY') {
+    throw new Error('支付回调金额不匹配')
+  }
 
   // 记录微信交易号
   if (payload.transaction_id) {

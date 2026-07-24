@@ -31,6 +31,7 @@ export async function rateLimit(
 
 /** 从请求头中提取客户端 IP（兼容反向代理）*/
 export function getClientIp(req: NextRequest): string {
+  if (process.env.TRUST_PROXY_HEADERS !== 'true') return 'direct-client'
   const xff = req.headers.get('x-forwarded-for')
   if (xff) return xff.split(',')[0].trim()
   const real = req.headers.get('x-real-ip')

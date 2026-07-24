@@ -100,7 +100,7 @@ export function ProjectsClient({ projects: initial }: ProjectsClientProps) {
                     onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
                   <button type="button" onClick={() => fileRef.current?.click()}
                     className="w-full rounded-lg border-2 border-dashed border-gray-300 p-6 text-sm text-gray-500 hover:border-brand-400 hover:text-brand-600 transition-colors">
-                    {file ? `已选择：${file.name}` : '点击选择 .docx 文件（最大 10MB）'}
+                    {file ? `已选择：${file.name}` : '点击选择 .docx 文件（最大 500MB）'}
                   </button>
                 </div>
               )}

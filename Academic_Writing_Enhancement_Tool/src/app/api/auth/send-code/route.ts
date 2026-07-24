@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { randomInt } from 'crypto'
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
 import { rateLimit, getClientIp } from '@/lib/rateLimit'
 import { sendOtpEmail } from '@/lib/mailer'
+import { sendOtpSms } from '@/lib/sms'
+import { hashOtp } from '@/lib/otp'
 
 const sendCodeSchema = z.object({
   target: z.string(),
@@ -16,11 +19,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: 'INVALID_PARAMS', message: '参数错误' }, { status: 400 })
   }
 
-  const { target, channel } = parsed.data
+  const channel = parsed.data.channel
+  const target = parsed.data.target.trim().toLowerCase()
 
   // 邮箱格式校验
   if (channel === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target)) {
     return NextResponse.json({ ok: false, code: 'INVALID_EMAIL', message: '邮箱格式不正确' }, { status: 400 })
+  }
+
+  // 手机号格式校验（中国大陆 11 位）
+  if (channel === 'sms' && !/^1[3-9]\d{9}$/.test(target)) {
+    return NextResponse.json({ ok: false, code: 'INVALID_PHONE', message: '手机号格式不正确' }, { status: 400 })
   }
 
   // 频率限制：同一 IP 每分钟最多 5 次
@@ -43,7 +52,7 @@ export async function POST(req: NextRequest) {
   }
 
   // 生成 6 位验证码
-  const code = Math.floor(100000 + Math.random() * 900000).toString()
+  const code = randomInt(100000, 1000000).toString()
   const expiresAt = new Date(Date.now() + parseInt(process.env.OTP_EXPIRE_MINUTES ?? '10') * 60 * 1000)
 
   // 查找或创建用户
@@ -65,7 +74,7 @@ export async function POST(req: NextRequest) {
   })
 
   await prisma.otpCode.create({
-    data: { userId: user.id, code, channel, target, expiresAt },
+    data: { userId: user.id, code: hashOtp(target, code), channel, target, expiresAt },
   })
 
   // 实际发送
@@ -73,14 +82,7 @@ export async function POST(req: NextRequest) {
     if (channel === 'email') {
       await sendOtpEmail(target, code)
     } else {
-      // 短信通道尚未接入
-      if (process.env.NODE_ENV === 'production') {
-        return NextResponse.json(
-          { ok: false, code: 'SMS_NOT_SUPPORTED', message: '短信通道暂未开放' },
-          { status: 501 },
-        )
-      }
-      console.log(`[OTP][sms] ${target}: ${code}`)
+      await sendOtpSms(target, code)
     }
   } catch (err) {
     console.error('[send-code] 发送失败', err)

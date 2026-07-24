@@ -7,7 +7,6 @@ import { Queue, Worker, Job, ConnectionOptions } from 'bullmq'
 import IORedis from 'ioredis'
 import { prisma } from '../db'
 import { processWithAI } from '../ai/adapter'
-import { validateOutput } from '../ai/validator'
 import { deductCredits, refundCredits } from '../billing'
 import type { ProcessMode } from '@/types'
 
@@ -57,45 +56,40 @@ export function createWorker(): Worker<ProcessJobData> {
         data: { status: 'running', startedAt: new Date() },
       })
 
-      let resultText: string | null = null
-      let validationPassed = false
-
       try {
-        // 调用 AI
-        const aiResult = await processWithAI({ original, mode, lockedTerms })
-        resultText = aiResult.result
+        // 调用 AI（编排层已完成：按等级选模型 → 同模型重试 → 必要时降级 → 质量校验）
+        const ai = await processWithAI({ original, mode, lockedTerms })
 
-        // 校验输出
-        const validation = validateOutput(original, resultText, lockedTerms)
-        validationPassed = validation.passed
+        // 统一记录模型与用量，便于后续成本核算（无论成败）
+        const usageData = {
+          model: ai.model,
+          provider: ai.provider,
+          promptTokens: ai.usage.promptTokens,
+          completionTokens: ai.usage.completionTokens,
+          fallbackUsed: ai.fallbackUsed,
+          fallbackAttempted: ai.fallbackAttempted,
+        }
 
-        if (!validationPassed) {
-          // 第一次失败，自动重试一次
-          const aiRetry = await processWithAI({ original, mode, lockedTerms })
-          resultText = aiRetry.result
-          const retryValidation = validateOutput(original, resultText, lockedTerms)
-          validationPassed = retryValidation.passed
-
-          if (!validationPassed) {
-            // 两次都失败，任务失败，不扣费
-            await prisma.processTask.update({
-              where: { id: taskId },
-              data: {
-                status: 'failed',
-                result: resultText,
-                validationPassed: false,
-                validationDetails: JSON.parse(JSON.stringify(retryValidation)),
-                errorCode: 'VALIDATION_FAILED',
-                errorMessage: retryValidation.details ?? '质量校验未通过',
-                finishedAt: new Date(),
-              },
-            })
-            await prisma.paragraph.update({
-              where: { id: paragraphId },
-              data: { status: 'error' },
-            })
-            return
-          }
+        if (!ai.validationPassed) {
+          // 重试（含降级）后仍未通过校验，任务失败，不扣费
+          await prisma.processTask.update({
+            where: { id: taskId },
+            data: {
+              ...usageData,
+              status: 'failed',
+              result: ai.result,
+              validationPassed: false,
+              validationDetails: ai.validationDetails ? { details: ai.validationDetails } : undefined,
+              errorCode: 'VALIDATION_FAILED',
+              errorMessage: ai.validationDetails ?? '质量校验未通过',
+              finishedAt: new Date(),
+            },
+          })
+          await prisma.paragraph.update({
+            where: { id: paragraphId },
+            data: { status: 'error' },
+          })
+          return
         }
 
         // 扣费（免费重试不扣费）
@@ -107,8 +101,9 @@ export function createWorker(): Worker<ProcessJobData> {
         await prisma.processTask.update({
           where: { id: taskId },
           data: {
+            ...usageData,
             status: 'done',
-            result: resultText,
+            result: ai.result,
             validationPassed: true,
             finishedAt: new Date(),
           },
@@ -141,7 +136,8 @@ export function createWorker(): Worker<ProcessJobData> {
         // AI 调用失败不扣费，尝试退还（若已扣）
         if (!isInsufficientCredits && !isFreeRetry) {
           try {
-            await refundCredits(userId, taskId, charCount, 'refund_failed')
+            const task = await prisma.processTask.findUnique({ where: { id: taskId }, select: { credited: true } })
+            if (task?.credited) await refundCredits(userId, taskId, charCount, 'refund_failed')
           } catch (_) {
             // 退还失败记录日志，不中断流程
             console.error('[Worker] 退款失败', taskId)

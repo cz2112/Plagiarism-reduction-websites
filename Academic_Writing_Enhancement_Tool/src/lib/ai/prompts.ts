@@ -1,10 +1,14 @@
 /**
  * AI 提示词
- * 保守改写：调整句式和重复表达，尽量不改变原意
- * 学术润色：改善语病、口语化表达和逻辑衔接
+ * 三档改写强度：
+ *   普通降重（standard）：同义替换、句式微调，尽量保留原句
+ *   深度降重（deep）：重组句子、调整衔接、主被动转换、合并拆分
+ *   至尊降重（premium）：重构表达逻辑、重写句群、增强学术风格
+ * 无论哪一档，均不改变事实、数字、引用与锁定术语。
  */
 
 import { ProcessMode } from '@/types'
+import { normalizeMode } from '@/lib/modes'
 
 export function buildSystemPrompt(mode: ProcessMode, lockedTerms: string[]): string {
   const termBlock =
@@ -12,45 +16,52 @@ export function buildSystemPrompt(mode: ProcessMode, lockedTerms: string[]): str
       ? `\n\n【锁定术语】以下术语必须原样保留，不得改动：${lockedTerms.map((t) => `"${t}"`).join('、')}`
       : ''
 
-  const modeInstructions =
-    mode === 'conservative'
-      ? CONSERVATIVE_INSTRUCTIONS
-      : POLISH_INSTRUCTIONS
-
-  return BASE_RULES + modeInstructions + termBlock
+  return BASE_RULES + MODE_INSTRUCTIONS[normalizeMode(mode)] + termBlock
 }
 
-const BASE_RULES = `你是一位专业的中文学术写作助手。你的任务是对用户提供的论文段落进行语言优化。
+const BASE_RULES = `你是一位专业的中文学术写作助手。你的任务是对用户提供的论文段落进行语言表达优化。
 
 【绝对禁止】
-- 不得改变任何事实、数据、核心观点
-- 不得添加原文中没有的引用、数据、案例
+- 不得改变任何事实、数据、核心观点和论证结论
+- 不得添加原文中没有的引用、数据、案例或事实
 - 不得伪造或修改参考文献编号（如[1][2]等）
 - 不得修改数字和单位（如"35%"、"100万元"、"p<0.05"）
 - 不得输出任何解释、说明或修改说明，只输出修改后的段落正文
 - 不得刻意堆砌生僻词或过度书面化
-- 若原文语义不明确，保留原文对应部分不改动
+- 若原文语义不明确或事实缺失，保留原文对应部分不改动，不得替用户补写事实
 
 【输出格式】
 - 只输出修改后的段落文本，不加任何前缀、后缀或说明
 - 不要输出"修改如下："、"优化结果："等额外内容`
 
-const CONSERVATIVE_INSTRUCTIONS = `
+const MODE_INSTRUCTIONS: Record<ProcessMode, string> = {
+  standard: `
 
-【当前模式：保守改写】
-- 主要调整重复出现的词语和句式，减少同义词的重复使用
-- 适当调整语序，使表达更流畅
-- 尽量保留原句结构，改动幅度要小
-- 如果句子表达已经足够准确，可以少改或不改`
+【当前等级：普通降重（低强度）】
+- 主要进行同义替换，减少重复出现的词语和句式
+- 适当调整语序和删除冗余，使表达更流畅
+- 尽量保留原句结构与段落结构，改动幅度要小
+- 不主动改变论证顺序，不大幅改写专业术语
+- 如果句子已足够准确，可少改或不改`,
 
-const POLISH_INSTRUCTIONS = `
+  deep: `
 
-【当前模式：学术润色】
-- 纠正明显的语病和病句
-- 将口语化表达改为书面学术语言（如"搞清楚"→"明确"、"很多"→"大量"）
-- 改善段落内部的逻辑衔接，适当添加衔接词（因此、然而、此外等）
-- 优化句子结构，提升表达准确性和专业性
-- 避免冗余重复，合并相似的表述`
+【当前等级：深度降重（中强度）】
+- 重组句子结构，可合并或拆分句子
+- 改变表达顺序，调整段内逻辑，补充必要的逻辑连接词（因此、然而、此外等）
+- 进行主动被动语态转换，明显改变表达方式
+- 将口语化表达转换为书面学术表达（如"搞清楚"→"明确"、"很多"→"大量"）
+- 在保留原意的前提下，让同一段内容读起来与原文明显不同`,
+
+  premium: `
+
+【当前等级：至尊降重（高强度）】
+- 重新组织句群和段落表达，在不改变原意的前提下重构论述方式
+- 大幅改写口语化、机械化或模板化的表述，使其接近成熟论文风格
+- 提升术语一致性与学术表达的严谨性
+- 处理重复的论证模板，消除段内重复结构
+- 允许较大幅度改写，但严禁改动事实、数字、引用与锁定术语，也不得替用户补足缺失的论证`,
+}
 
 export function buildUserPrompt(text: string): string {
   return `请对以下论文段落进行语言优化：\n\n${text}`

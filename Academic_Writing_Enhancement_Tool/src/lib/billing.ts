@@ -1,8 +1,10 @@
 /**
  * 字符计费规则：
- * 按提交正文中的汉字、字母和数字计费，不计算空格与标点。
+ * 先按提交正文中的汉字、字母和数字统计“计费字符数”，不计算空格与标点。
+ * 再按所选等级倍率换算为实际扣费字符数（见 lib/modes.ts 的 billedChars）：
+ *   普通降重 ×1.0，深度降重 ×1.8，至尊降重 ×3.0（向上取整）。
  * 生成前展示预计消耗；通过系统校验即扣费，与用户是否接受结果无关。
- * 每段首次重试免费。
+ * 每段（同一原文 + 同一等级）首次重试免费；生成失败不扣费。
  */
 
 import { prisma } from './db'
@@ -32,29 +34,25 @@ export async function deductCredits(
   reason: string = 'processed',
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
-    const user = await tx.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: { id: true, credits: true },
+    const task = await tx.processTask.findUniqueOrThrow({ where: { id: taskId }, select: { credited: true } })
+    if (task.credited) return
+    const updated = await tx.user.updateMany({
+      where: { id: userId, credits: { gte: charCount } },
+      data: { credits: { decrement: charCount } },
     })
-
-    if (user.credits < charCount) {
+    if (updated.count !== 1) {
       throw new Error('INSUFFICIENT_CREDITS')
     }
-
-    const newBalance = user.credits - charCount
-
-    await tx.user.update({
-      where: { id: userId },
-      data: { credits: newBalance },
-    })
+    const user = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { credits: true } })
+    const balanceBefore = user.credits + charCount
 
     await tx.usageLog.create({
       data: {
         userId,
         taskId,
         charCount,
-        balanceBefore: user.credits,
-        balanceAfter: newBalance,
+        balanceBefore,
+        balanceAfter: user.credits,
         reason,
       },
     })
@@ -74,6 +72,8 @@ export async function refundCredits(
   reason: string = 'refund_failed',
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    const task = await tx.processTask.findUniqueOrThrow({ where: { id: taskId }, select: { credited: true } })
+    if (!task.credited) return
     const user = await tx.user.findUniqueOrThrow({
       where: { id: userId },
       select: { credits: true },
@@ -96,6 +96,7 @@ export async function refundCredits(
         reason,
       },
     })
+    await tx.processTask.update({ where: { id: taskId }, data: { credited: false } })
   })
 }
 
@@ -119,19 +120,14 @@ export async function isFreeRetryAvailable(
 export async function grantFreeQuota(userId: string): Promise<void> {
   const freeChars = parseInt(process.env.FREE_CHAR_QUOTA ?? '1000')
   await prisma.$transaction(async (tx) => {
-    const user = await tx.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: { freeUsed: true, credits: true },
-    })
-    if (user.freeUsed) return
-
-    await tx.user.update({
-      where: { id: userId },
+    const granted = await tx.user.updateMany({
+      where: { id: userId, freeUsed: false },
       data: {
-        credits: user.credits + freeChars,
+        credits: { increment: freeChars },
         freeUsed: true,
       },
     })
+    if (granted.count > 1) throw new Error('FREE_QUOTA_INVARIANT_VIOLATION')
   })
 }
 
@@ -142,13 +138,14 @@ export async function addCredits(
   charCount: number,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    const paid = await tx.order.updateMany({
+      where: { id: orderId, userId, status: 'pending' },
+      data: { status: 'paid', paidAt: new Date() },
+    })
+    if (paid.count !== 1) return
     await tx.user.update({
       where: { id: userId },
       data: { credits: { increment: charCount } },
-    })
-    await tx.order.update({
-      where: { id: orderId },
-      data: { status: 'paid', paidAt: new Date() },
     })
   })
 }

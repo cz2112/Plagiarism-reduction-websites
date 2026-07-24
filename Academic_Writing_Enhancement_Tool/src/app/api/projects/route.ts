@@ -62,8 +62,8 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       )
     }
-    if (file.size > 10 * 1024 * 1024) {
-      return NextResponse.json({ ok: false, code: 'FILE_TOO_LARGE', message: '文件不能超过 10MB' }, { status: 400 })
+    if (file.size > 500 * 1024 * 1024) {
+      return NextResponse.json({ ok: false, code: 'FILE_TOO_LARGE', message: '文件不能超过 500MB' }, { status: 400 })
     }
     const buffer = Buffer.from(await file.arrayBuffer())
     try {
